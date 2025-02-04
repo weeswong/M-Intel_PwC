@@ -1,0 +1,229 @@
+## [M-Intel_PwC] Technical Assignment - software engineer
+
+require("dotenv").config();
+const express = require("express");
+const jwt = require("jsonwebtoken");
+const mysql = require("mysql2/promise");
+const bodyParser = require("body-parser");
+
+const app = express();
+app.use(bodyParser.json());
+
+const SECRET_KEY = process.env.JWT_SECRET || "mySecretKey";
+
+// สร้าง Connection ไปยัง MySQL
+const db = mysql.createPool({
+    host: process.env.DB_HOST || "localhost",
+    user: process.env.DB_USER || "root",
+    password: process.env.DB_PASS || "",
+    database: process.env.DB_NAME || "bookstore",
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+});
+
+// API Login - รับ JWT Token
+app.post("/login", async (req, res) => {
+    const { username, password } = req.body;
+
+    // ตัวอย่าง Username & Password แบบง่าย
+    if (username === "admin" && password === "1234") {
+        const user = { id: 1, username: "admin", role: "admin" };
+
+        // สร้าง JWT Token
+        const token = jwt.sign(user, SECRET_KEY, { expiresIn: "1h" });
+
+        res.json({ token });
+    } else {
+        res.status(401).json({ error: "Invalid credentials" });
+    }
+});
+
+// API เพิ่มหนังสือใหม่ลงในฐานข้อมูล
+app.post("/books", verifyToken, async (req, res) => {
+  try {
+      const { title, author, published_year } = req.body;
+
+      if (!title || !author || !published_year) {
+          return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      const query = "INSERT INTO books (title, author, published_year) VALUES (?, ?, ?)";
+      const [result] = await db.query(query, [title, author, published_year]);
+
+      res.status(201).json({ message: "Book added successfully", bookId: result.insertId });
+  } catch (err) {
+      res.status(500).json({ error: "Database error", details: err.message });
+  }
+});
+
+// API อัปเดตข้อมูลหนังสือตาม ID
+app.put("/books/:id", verifyToken, async (req, res) => {
+  try {
+      const { id } = req.params;
+      const { title, author, published_year } = req.body;
+
+      // ตรวจสอบว่ามีข้อมูลที่ต้องการอัปเดตหรือไม่
+      if (!title && !author && !published_year) {
+          return res.status(400).json({ error: "At least one field is required to update" });
+      }
+
+      let query = "UPDATE books SET ";
+      let params = [];
+      if (title) {
+          query += "title = ?, ";
+          params.push(title);
+      }
+      if (author) {
+          query += "author = ?, ";
+          params.push(author);
+      }
+      if (published_year) {
+          query += "published_year = ?, ";
+          params.push(published_year);
+      }
+
+      query = query.slice(0, -2); // ลบ ", " ที่ท้ายสุดออก
+      query += " WHERE id = ?";
+      params.push(id);
+
+      const [result] = await db.query(query, params);
+
+      if (result.affectedRows === 0) {
+          return res.status(404).json({ error: "Book not found" });
+      }
+
+      res.json({ message: "Book updated successfully" });
+  } catch (err) {
+      res.status(500).json({ error: "Database error", details: err.message });
+  }
+});
+
+// API ลบหนังสือตาม ID
+app.delete("/books/:id", verifyToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // ตรวจสอบว่าหนังสือมีอยู่จริงหรือไม่
+        const [check] = await db.query("SELECT * FROM books WHERE id = ?", [id]);
+        if (check.length === 0) {
+            return res.status(404).json({ error: "Book not found" });
+        }
+
+        // ลบหนังสือจากฐานข้อมูล
+        const [result] = await db.query("DELETE FROM books WHERE id = ?", [id]);
+
+        res.json({ message: "Book deleted successfully" });
+    } catch (err) {
+        res.status(500).json({ error: "Database error", details: err.message });
+    }
+});
+
+// API ค้นหาหนังสือตามชื่อ (title) หรือผู้แต่ง (author)
+app.get("/books/search", verifyToken, async (req, res) => {
+    try {
+        const { title, author } = req.query; // รับค่า query parameters
+        let query = "SELECT * FROM books WHERE 1=1";
+        let params = [];
+
+        if (title) {
+            query += " AND title LIKE ?";
+            params.push(`%${title}%`);
+        }
+        if (author) {
+            query += " AND author LIKE ?";
+            params.push(`%${author}%`);
+        }
+
+        const [rows] = await db.query(query, params);
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: "Database error", details: err.message });
+    }
+});
+
+// Middleware ตรวจสอบ JWT Token
+function verifyToken(req, res, next) {
+    const authHeader = req.headers["authorization"];
+    const token = authHeader && authHeader.split(" ")[1];
+
+    if (!token) {
+        return res.status(403).json({ error: "Access denied, token missing" });
+    }
+
+    jwt.verify(token, SECRET_KEY, (err, user) => {
+        if (err) {
+            return res.status(403).json({ error: "Invalid token" });
+        }
+        req.user = user;
+        next();
+    });
+}
+
+// Start Server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server is running on http://localhost:${PORT}`);
+});
+// === Document ===
+// ===== Test Get jwt ======
+POST http://localhost:3000/login
+Content-Type: application/json
+// request body
+{
+  "username": "admin",
+  "password": "1234"
+}
+// response jwt
+{
+"token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+
+// ===== Test Add ======
+POST http://localhost:3000/books
+Content-Type: application/json
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+// request body
+{
+  "title": "The Catcher in the Rye",
+  "author": "J.D. Salinger",
+  "published_year": 1951
+}
+// response add data books
+{
+  "message": "Book added successfully",
+  "bookId": 4
+}
+// ===== Test Update ======
+PUT http://localhost:3000/books/3
+Content-Type: application/json
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+// request body
+{
+  "title": "Nineteen Eighty-Four",
+  "published_year": 1950
+}
+// response update data books
+{
+  "message": "Book updated successfully"
+}
+// ===== Test Delete ======
+DELETE http://localhost:3000/books/3
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+// response delete data books
+{
+  "message": "Book deleted successfully"
+}
+// ===== Test Search ======
+GET http://localhost:3000/books/search?title=1984
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+// response data books
+[
+  {
+    "id": 3,
+    "title": "1984",
+    "author": "George Orwell",
+    "published_year": 1949
+  }
+]
+
